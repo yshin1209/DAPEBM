@@ -10,7 +10,7 @@ namespace Interfaces {
    public interface IDiabetesPatient : IActor {
       Task PrepareData(long mN, int wN, double sN, double fN);
       Task Initialize(long[] cluster);
-      Task RunAStep();
+      Task RunAStep(object state);
       Task SendWeights(long neighbor, long iterationId, double[] theirWeights);
 
       Task<string> LMS(int mN, int wN, double sN, double fN);

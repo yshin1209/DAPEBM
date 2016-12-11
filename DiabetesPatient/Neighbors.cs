@@ -75,7 +75,10 @@ namespace DiabetesPatient {
          get { return History[iteration]; }
          set {
             if (History.Keys.Count >= MaxHistoryLength) {
-               History.Remove(History.Keys.Min());
+               var smallerKey = History.Keys.Min();
+               if (iteration != smallerKey) {
+                  History.Remove(smallerKey);
+               }
             }
             History[iteration] = value;
          }

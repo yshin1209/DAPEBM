@@ -21,7 +21,15 @@ namespace DiabetesPatient {
 
       protected override Task OnActivateAsync() {
          ActorEventSource.Current.ActorMessage(this, "Actor activated.");
-         return Task.FromResult(true);
+         return base.OnActivateAsync();
+      }
+
+      protected override Task OnDeactivateAsync() {
+         if (IterationTimer != null) {
+            UnregisterTimer(IterationTimer);
+            IterationTimer = null;
+         }
+         return base.OnDeactivateAsync();
       }
 
       private static long measurementsNum;
@@ -32,10 +40,10 @@ namespace DiabetesPatient {
       private static double[] measurements;
       Task IDiabetesPatient.PrepareData(long mN, int wN, double sN, double fN) {
          /* Constants */
-         measurementsNum = mN; // 1000
-         weightsNum = wN; // 5
-         step = sN; // 0.1
-         double filterSeed = fN; // 0.5
+         measurementsNum = mN;
+         weightsNum = wN;
+         step = sN;
+         double filterSeed = fN;
 
          filterC = new double[weightsNum];
          signals = new double[measurementsNum];
@@ -75,23 +83,29 @@ namespace DiabetesPatient {
             }
          }
 
-         var weights = new List<double>();
+         var weights = new double[weightsNum];
          for (int l = 0; l < weightsNum; l++) {
-            weights.Add(0);
+            weights[l] = 0;
          }
 
-         await this.StateManager.AddOrUpdateStateAsync("neighbors", neighbors, (key, value) => neighbors);
+         await this.StateManager.AddOrUpdateStateAsync<Neighbors>("neighbors", neighbors, (key, value) => neighbors);
          await this.StateManager.AddOrUpdateStateAsync<long>("currentIteration", 1, (key, value) => 1);
-         await this.StateManager.AddOrUpdateStateAsync("weights", weights, (key, value) => weights);
+         await this.StateManager.AddOrUpdateStateAsync<double[]>("weights", weights, (key, value) => weights);
 
          ActorEventSource.Current.ActorMessage(this, $"Data initialized for actor: {myId}");
          return;
       }
 
-      async Task IDiabetesPatient.RunAStep() {
+      private IActorTimer IterationTimer;
+      async Task IDiabetesPatient.RunAStep(object state) {
          var currentIteration = await this.StateManager.GetStateAsync<long>("currentIteration");
-         var weights = await this.StateManager.GetStateAsync<List<double>>("weights");
          var neighbors = await this.StateManager.GetStateAsync<Neighbors>("neighbors");
+         var weights = await this.StateManager.GetStateAsync<double[]>("weights");
+
+         if (!neighbors.AllHaveDataFor(currentIteration) && IterationTimer != null) {
+            UnregisterTimer(IterationTimer);
+            IterationTimer = null;
+         }
 
          double[] range = new double[weightsNum];
          double[] psi = new double[weightsNum];
@@ -145,29 +159,15 @@ namespace DiabetesPatient {
          var currentIteration = await this.StateManager.GetStateAsync<long>("currentIteration");
          var neighbors = await this.StateManager.GetStateAsync<Neighbors>("neighbors");
 
-         //var message = $"Call Params: neighbor => {neighbor}, iter => {iterationId}, weights => {theirWeights.ToString()}\n";
-         //foreach (var thing1 in neighbors) {
-         //   message += $"A Neighbor:\n";
-         //   message += $"Id: {thing1.Key}\n";
-         //   message += $"Details:\n";
-         //   foreach( var thing2 in thing1.Value) {
-         //      message += $"Id: {thing2.Key}\n";
-         //      message += $"Contents:{thing2.Value.ToString()}\n";
-         //   }
-         //}
-
          ActorEventSource.Current.ActorMessage(this, $"Call Params: neighbor => {neighbor}, iter => {iterationId}");
 
          neighbors[neighbor][iterationId] = new List<double>(theirWeights);
          await this.StateManager.SetStateAsync("neighbors", neighbors);
 
-         // NOTE: (currentIteration > 1) used to prevent expanding the size of the buffer/history by 1.
-         // This happens because it is possible for all actors but this to already be done with a step.
-         // Therefore, all the data for the next iteration is available but we haven't finished calling
-         // the initial iteration. This can happen because we are running the first iteration from
-         // outside the expected flow of the application.
-         if (currentIteration > 1 && currentIteration <= measurementsNum && neighbors.AllHaveDataFor(currentIteration - 1)) {
-            await ((IDiabetesPatient)this).RunAStep();
+         if (currentIteration == (iterationId + 1) && currentIteration <= measurementsNum && neighbors.AllHaveDataFor(iterationId)) {
+            if (IterationTimer == null) {
+               IterationTimer = RegisterTimer(((IDiabetesPatient)this).RunAStep, null, TimeSpan.FromMilliseconds(0), TimeSpan.FromSeconds(5));
+            }
          }
 
          return;
