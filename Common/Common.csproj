@@ -76,6 +76,7 @@
   <ItemGroup>
     <Compile Include="ServiceUriConstructor.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TaskManagement.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />

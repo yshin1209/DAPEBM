@@ -26,8 +26,8 @@
   <ConfigPackage Name="Config" Version="1.0.0" />
   <Resources>
     <Endpoints>
-      <Endpoint Name="DiabetesPatientEndpoint" />
-      <Endpoint Name="DiabetesPatientReplicatorEndpoint" />
+      <Endpoint Name="DiabetesPatientEndpoint" Port="0" />
+      <Endpoint Name="DiabetesPatientReplicatorEndpoint" Port="0" />
     </Endpoints>
   </Resources>
   <!-- The content will be generated during build -->

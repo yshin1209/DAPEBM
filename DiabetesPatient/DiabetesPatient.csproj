@@ -81,6 +81,7 @@
     <Reference Include="System.Runtime.Serialization" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Neighbors.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="DiabetesPatient.cs" />
     <Compile Include="Program.cs" />
@@ -93,6 +94,10 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Common\Common.csproj">
+      <Project>{78f99dd6-d974-4502-8f11-aa7993f321cd}</Project>
+      <Name>Common</Name>
+    </ProjectReference>
     <ProjectReference Include="..\Interfaces\Interfaces.csproj">
       <Project>{83aad38d-686e-4d55-9089-4b9713773c2f}</Project>
       <Name>Interfaces</Name>
