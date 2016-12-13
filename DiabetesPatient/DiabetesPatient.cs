@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -19,8 +20,14 @@ namespace DiabetesPatient {
           : base(actorService, actorId) {
       }
 
+      private double[] myData = new double[0];
       protected override Task OnActivateAsync() {
-         ActorEventSource.Current.ActorMessage(this, "Actor activated.");
+         ActorId myActorId = this.GetActorId();
+         long myId = (myActorId.Kind == ActorIdKind.Long ? myActorId.GetLongId() : myActorId.GetHashCode());
+         if (AllData.From.ContainsKey(myId)) {
+            myData = AllData.From[myId];
+            Console.WriteLine($"Loaded data from dictionary: {myId}");
+         }
          return base.OnActivateAsync();
       }
 
@@ -32,44 +39,9 @@ namespace DiabetesPatient {
          return base.OnDeactivateAsync();
       }
 
-      private static long measurementsNum;
-      private static long weightsNum;
-      private static double step;
-      private static double[] filterC;
-      private static double[] signals;
-      private static double[] measurements;
-      Task IDiabetesPatient.PrepareData(long mN, int wN, double sN, double fN) {
-         /* Constants */
-         measurementsNum = mN;
-         weightsNum = wN;
-         step = sN;
-         double filterSeed = fN;
-
-         filterC = new double[weightsNum];
-         signals = new double[measurementsNum];
-         measurements = new double[measurementsNum];
-
-         /* Filter and Signal initializations */
-         for (int l = 0; l < weightsNum; l++) {
-            filterC[l] = Math.Pow(filterSeed, weightsNum - l - 1);
-         }
-
-         var random = new Random();
-         for (long l = 0; l < measurementsNum; l++) {
-            measurements[l] = random.NextDouble();
-
-            for (int u = 0; u < weightsNum; u++) {
-               if (l - u >= 0) {
-                  signals[l] += measurements[l - u] * filterC[u];
-               }
-            }
-         }
-
-         ActorEventSource.Current.ActorMessage(this, "Data Prepared.");
-         return Task.FromResult(true);
-      }
-
-      async Task IDiabetesPatient.Initialize(long[] cluster) {
+      private double myStep;
+      private double myNormalizer;
+      async Task IDiabetesPatient.InitializeCooperativeNLMS(int coefficientsNum, double coefficientsStep, double coefficientsNormalizer, long[] cluster) {
          var neighbors = new Neighbors(true);
          ActorId myActorId = this.GetActorId();
          long myId = (myActorId.Kind == ActorIdKind.Long ? myActorId.GetLongId() : myActorId.GetHashCode());
@@ -77,20 +49,22 @@ namespace DiabetesPatient {
          for (int l = 0; l < cluster.Length; l++) {
             if (cluster[l] != myId) {
                neighbors[cluster[l]] = new NeighborDetails(0);
-               for (long u = 0; u < weightsNum; u++) {
+               for (long u = 0; u < coefficientsNum; u++) {
                   neighbors[cluster[l]][0].Add(0);
                }
             }
          }
 
-         var weights = new double[weightsNum];
-         for (int l = 0; l < weightsNum; l++) {
-            weights[l] = 0;
+         var coefficients = new double[coefficientsNum];
+         for (int l = 0; l < coefficientsNum; l++) {
+            coefficients[l] = 0;
          }
 
+         myStep = coefficientsStep;
+         myNormalizer = coefficientsNormalizer;
          await this.StateManager.AddOrUpdateStateAsync<Neighbors>("neighbors", neighbors, (key, value) => neighbors);
          await this.StateManager.AddOrUpdateStateAsync<long>("currentIteration", 1, (key, value) => 1);
-         await this.StateManager.AddOrUpdateStateAsync<double[]>("weights", weights, (key, value) => weights);
+         await this.StateManager.AddOrUpdateStateAsync<double[]>("coefficients", coefficients, (key, value) => coefficients);
 
          ActorEventSource.Current.ActorMessage(this, $"Data initialized for actor: {myId}");
          return;
@@ -100,48 +74,51 @@ namespace DiabetesPatient {
       async Task IDiabetesPatient.RunAStep(object state) {
          var currentIteration = await this.StateManager.GetStateAsync<long>("currentIteration");
          var neighbors = await this.StateManager.GetStateAsync<Neighbors>("neighbors");
-         var weights = await this.StateManager.GetStateAsync<double[]>("weights");
+         var coefficients = await this.StateManager.GetStateAsync<double[]>("coefficients");
 
-         if (!neighbors.AllHaveDataFor(currentIteration) && IterationTimer != null) {
+         if ((!neighbors.AllHaveDataFor(currentIteration) || currentIteration >= myData.PossibleIterations()) && IterationTimer != null) {
             UnregisterTimer(IterationTimer);
             IterationTimer = null;
          }
 
-         double[] range = new double[weightsNum];
-         double[] psi = new double[weightsNum];
-         double estimatedSignal = 0;
-         double error = 0;
+         var updateIteration = this.StateManager.SetStateAsync("currentIteration", currentIteration + 1);
 
          // Input Range
-         for (long l = currentIteration; l > currentIteration - weightsNum; l--) {
+         double[] range = new double[coefficients.Length];
+         for (long l = currentIteration; l > currentIteration - coefficients.Length; l--) {
             if (l >= 1) {
-               range[weightsNum + (l - currentIteration) - 1] = measurements[l - 1];
+               range[coefficients.Length + (l - currentIteration) - 1] = myData.AsMeasurement(l - 1);
             } else {
                break;
             }
          }
 
-         estimatedSignal = 0;
-         for (int l = 0; l < weightsNum; l++) {
-            estimatedSignal += weights[l] * range[l];
+         double estimatedSignal = 0;
+         double normalizedStep = myNormalizer;
+         for (int l = 0; l < coefficients.Length; l++) {
+            estimatedSignal += coefficients[l] * range[l];
+            normalizedStep += range[l] * range[l];
          }
 
-         error = signals[currentIteration - 1] - estimatedSignal;
+         normalizedStep = myStep / normalizedStep;
+         double error = myData.AsSignal(currentIteration - 1) - estimatedSignal;
 
-         for (int l = 0; l < weightsNum; l++) {
-            psi[l] = weights[l] + (step * error * range[l]);
-            weights[l] = psi[l];
+         var weightsForFile = "";
+         double[] psi = new double[coefficients.Length];
+         for (int l = 0; l < coefficients.Length; l++) {
+            psi[l] = coefficients[l] + (normalizedStep * error * range[l]);
+            weightsForFile += $",{coefficients[l]}";
+            coefficients[l] = psi[l];
          }
 
-         for (int l = 0; l < weightsNum; l++) {
+         for (int l = 0; l < coefficients.Length; l++) {
             foreach (var neighbor in neighbors) {
-               weights[l] += neighbor.Value[currentIteration - 1][l];
+               coefficients[l] += neighbor.Value[currentIteration - 1][l];
             }
-            weights[l] /= neighbors.Count + 1;
+            coefficients[l] /= neighbors.Count + 1;
          }
 
-         await this.StateManager.SetStateAsync("weights", weights);
-         await this.StateManager.SetStateAsync("currentIteration", currentIteration + 1);
+         var updateCoefficients = this.StateManager.SetStateAsync("coefficients", coefficients);
 
          IDiabetesPatient neighborProxy;
          ActorId myActorId = this.GetActorId();
@@ -151,12 +128,20 @@ namespace DiabetesPatient {
             neighborProxy.SendWeights(myId, currentIteration, psi).Forget();
          }
 
+         using (StreamWriter csvWriter = new StreamWriter(Path.Combine(Directory.GetCurrentDirectory(), $"{myId}_coopLMS.csv"), true)) {
+            csvWriter.Write($"{currentIteration},{myData.AsSignal(currentIteration - 1)},{estimatedSignal}");
+            csvWriter.WriteLine(weightsForFile);
+         }
+
+         await updateCoefficients;
+         await updateIteration;
+
          ActorEventSource.Current.ActorMessage(this, $"Ran iteration[{currentIteration}] for actor: {myId}");
          return;
       }
 
       async Task IDiabetesPatient.SendWeights(long neighbor, long iterationId, double[] theirWeights) {
-         var currentIteration = await this.StateManager.GetStateAsync<long>("currentIteration");
+         var nextIteration = await this.StateManager.GetStateAsync<long>("currentIteration");
          var neighbors = await this.StateManager.GetStateAsync<Neighbors>("neighbors");
 
          ActorEventSource.Current.ActorMessage(this, $"Call Params: neighbor => {neighbor}, iter => {iterationId}");
@@ -164,72 +149,72 @@ namespace DiabetesPatient {
          neighbors[neighbor][iterationId] = new List<double>(theirWeights);
          await this.StateManager.SetStateAsync("neighbors", neighbors);
 
-         if (currentIteration == (iterationId + 1) && currentIteration <= measurementsNum && neighbors.AllHaveDataFor(iterationId)) {
+         if (nextIteration == (iterationId + 1) && nextIteration <= myData.PossibleIterations() && neighbors.AllHaveDataFor(iterationId)) {
             if (IterationTimer == null) {
-               IterationTimer = RegisterTimer(((IDiabetesPatient)this).RunAStep, null, TimeSpan.FromMilliseconds(0), TimeSpan.FromSeconds(5));
+               IterationTimer = RegisterTimer(((IDiabetesPatient)this).RunAStep, null, TimeSpan.FromMilliseconds(0), TimeSpan.FromMilliseconds(500));
             }
          }
 
          return;
       }
 
-      Task<string> IDiabetesPatient.LMS(int mN, int wN, double sN, double fN) {
-         double[] msm = new double[mN];
-         double[] sig = new double[mN];
-         double[] rng = new double[wN];
-         double[] fC = new double[wN];
-         double[] wg = new double[wN];
-
-         /* Filter and Signal initializations */
-         for (int l = 0; l < wN ; l++) {
-            fC[l] = Math.Pow(fN, wN - l - 1);
-         }
-
-         var random = new Random();
-         for (int l = 0; l < mN; l++) {
-            msm[l] = random.NextDouble();
-
-            for (int u = 0; u < wN; u++) {
-               if (l - u >= 0) {
-                  sig[l] += msm[l - u] * fC[u];
-               }
-            }
-         }
-
-         /* LMS */
+      Task<double[]> IDiabetesPatient.NonCooperativeNLMS(int coefficientsNum, double stepNum, double normalizerNum) {
+         double[] coefficients = new double[coefficientsNum];
+         double[] range = new double[coefficientsNum];
          double estimatedSignal = 0;
          double error = 0;
-         for (int l = 0; l < mN; l++) {
+         double normalizedStep = 0;
 
-            for (int u = l; u > l - wN; u--) {
-               if (u >= 0) {
-                  rng[wN + (u - l) - 1] = msm[u];
-               } else {
-                  break;
+         ActorId myActorId = this.GetActorId();
+         long myId = (myActorId.Kind == ActorIdKind.Long ? myActorId.GetLongId() : myActorId.GetHashCode());
+         using (StreamWriter csvWriter = new StreamWriter(Path.Combine(Directory.GetCurrentDirectory(), $"{myId}_non-coopLMS.csv"), true)) {
+
+            for (int l = 0; l < myData.PossibleIterations(); l++) {
+
+               for (int u = l; u > l - coefficientsNum; u--) {
+                  if (u >= 0) {
+                     range[coefficientsNum + (u - l) - 1] = myData.AsMeasurement(u);
+                  } else {
+                     break;
+                  }
                }
+
+               estimatedSignal = 0;
+               normalizedStep = normalizerNum;
+               for (int u = 0; u < coefficientsNum; u++) {
+                  estimatedSignal += coefficients[u] * range[u];
+                  normalizedStep += range[u] * range[u];
+               }
+               normalizedStep = stepNum / normalizedStep;
+
+               error = myData.AsSignal(l) - estimatedSignal;
+
+               csvWriter.Write($"{l + 1},{myData.AsSignal(l)},{estimatedSignal}");
+               for (int u = 0; u < coefficientsNum; u++) {
+                  csvWriter.Write($",{coefficients[u]}");
+                  coefficients[u] = coefficients[u] + (normalizedStep * error * range[u]);
+               }
+               csvWriter.WriteLine();
+
             }
-
-            estimatedSignal = 0;
-            for (int u = 0; u < wN; u++) {
-               estimatedSignal += wg[u] * rng[u];
-            }
-
-            error = sig[l] - estimatedSignal;
-
-            for (int u = 0; u < wN; u++) {
-               wg[u] = wg[u] + (sN * error * rng[u]);
-            }
-
          }
 
-         string message = "Comparison between weights:\n";
-         for (int u = 0; u < wN; u++) {
-            message += $"\t{u + 1} => {fC[wN - u - 1]} | {wg[u]}\n";
-         }
-         ActorEventSource.Current.ActorMessage(this, message);
-
-         return Task.FromResult(message);
+         return Task.FromResult(coefficients);
       }
 
+   }
+
+   internal static class ArrayExtensions {
+      public static elementType AsMeasurement<elementType>(this elementType[] array, long index) {
+         return array[index];
+      }
+
+      public static elementType AsSignal<elementType>(this elementType[] array, long index) {
+         return array[index + 1];
+      }
+
+      public static int PossibleIterations<elementType>(this elementType[] array) {
+         return array.Length - 1;
+      }
    }
 }

@@ -8,11 +8,10 @@ using Microsoft.ServiceFabric.Actors;
 namespace Interfaces {
 
    public interface IDiabetesPatient : IActor {
-      Task PrepareData(long mN, int wN, double sN, double fN);
-      Task Initialize(long[] cluster);
+      Task InitializeCooperativeNLMS(int coefficientsNum, double coefficientsStep, double coefficientsNormalizer, long[] cluster);
       Task RunAStep(object state);
       Task SendWeights(long neighbor, long iterationId, double[] theirWeights);
 
-      Task<string> LMS(int mN, int wN, double sN, double fN);
+      Task<double[]> NonCooperativeNLMS(int coefficientsNum, double stepNum, double normalizerNum);
    }
 }

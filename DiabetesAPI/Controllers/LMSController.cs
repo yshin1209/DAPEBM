@@ -14,27 +14,23 @@ namespace DiabetesAPI.Controllers {
 
    [Route("api")]
    public class LMSController : Controller {
-      private ActorId ForwardActorId = ActorId.CreateRandom();
+      //private ActorId ForwardActorId = ActorId.CreateRandom();
 
-      [HttpGet("[action]/{mN:long}/{wN:int}/{sN}/{fN}/{nN:int}")]
-      public async Task<IActionResult> DLMS(long mN, int wN, double sN, double fN, int nN) {
+      [HttpGet("[action]/{cN:int}/{sN}/{gN}/{nN:int}/{iA:long}")]
+      public async Task<IActionResult> CNLMS(int cN, double sN, double gN, int nN, long iA) {
          var result = "Can't run";
 
          if (nN > 1) {
             IDiabetesPatient actor;
-            var initialActor = (new Random()).Next(0, 999999);
-
-            actor = ActorProxy.Create<IDiabetesPatient>(new ActorId(initialActor), ServiceUriFor("DiabetesPatient"));
-            await actor.PrepareData(mN, wN, sN, fN);
 
             var cluster = new long[nN];
             for (var l = 0; l < cluster.Length; l++) {
-               cluster[l] = initialActor + l;
+               cluster[l] = iA + l;
             }
 
             for (var l = 0; l < cluster.Length; l++) {
                actor = ActorProxy.Create<IDiabetesPatient>(new ActorId(cluster[l]), ServiceUriFor("DiabetesPatient"));
-               await actor.Initialize(cluster);
+               await actor.InitializeCooperativeNLMS(cN, sN, gN, cluster);
             }
 
             for (var l = 0; l < cluster.Length; l++) {
@@ -48,10 +44,10 @@ namespace DiabetesAPI.Controllers {
          return Ok(result);
       }
 
-      [HttpGet("[action]/{mN:int}/{wN:int}/{sN}/{fN}")]
-      public async Task<IActionResult> LMS(int mN, int wN, double sN, double fN) {
-         var actor = ActorProxy.Create<IDiabetesPatient>(ForwardActorId, ServiceUriFor("DiabetesPatient"));
-         var result = await actor.LMS(mN, wN, sN, fN);
+      [HttpGet("[action]/{cN:int}/{sN}/{gN}/{iA:long}")]
+      public async Task<IActionResult> NCNLMS(int cN, double sN, double gN, long iA) {
+         var actor = ActorProxy.Create<IDiabetesPatient>(new ActorId(iA), ServiceUriFor("DiabetesPatient"));
+         var result = await actor.NonCooperativeNLMS(cN, sN, gN);
          return Ok(result);
       }
    }
